@@ -29,7 +29,6 @@ jobs:
         env:
           IMG: ${{ steps.img.outputs.image }}
         run: |
-          set -x
           sudo modprobe binder_linux || true
           sudo mkdir -p /dev/binderfs
           sudo mount -t binder binder /dev/binderfs || true
@@ -42,15 +41,10 @@ jobs:
 
       - name: Adb setup
         run: |
-          set -x
           sudo apt-get update -qq
-          sudo apt-get install -y -qq adb curl xz-utils python3-pip 2>/dev/null || true
-          adb kill-server || true
-          adb start-server || true
-          adb disconnect || true
-          sleep 2
-          adb connect 127.0.0.1:5555 || true
-          sleep 5
+          sudo apt-get install -y -qq adb curl python3 2>/dev/null || true
+          adb kill-server || true; adb start-server || true; adb disconnect || true; sleep 2
+          adb connect 127.0.0.1:5555 || true; sleep 5
           adb devices -l
           A="adb -s 127.0.0.1:5555"
           for i in $(seq 1 40); do
@@ -59,12 +53,9 @@ jobs:
             sleep 5
           done
           $A shell id || true
-          $A shell getprop ro.build.version.release || true
-          $A shell getprop ro.product.cpu.abilist || true
 
       - name: Install XHS
         run: |
-          set -x
           curl -L --retry 3 -o xhs.apk "https://github.com/Sakry1216/xhs-re-cloud/releases/download/apk-v1/xhs_official.apk"
           A="adb -s 127.0.0.1:5555"
           timeout 600 $A install -r xhs.apk 2>&1 | tail -3 || true
@@ -72,21 +63,49 @@ jobs:
 
       - name: Dismiss notice + launch XHS
         run: |
-          set -x
           A="adb -s 127.0.0.1:5555"
-          $A shell input tap 540 1215 || true
-          sleep 4
-          $A exec-out screencap -p > notice_dismissed.png || true
-          $A shell settings put global window_animation_scale 0 || true
+          $A shell settings put global window_attention_anim_duration 0 2>/dev/null || true
+          for round in 1 2 3; do
+            $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
+            $A shell cat /sdcard/ui.xml > ui.xml 2>/dev/null || true
+            COORD=$(python3 - <<'EOF'
+import re, sys
+try:
+    t = open('ui.xml', encoding='utf-8', errors='replace').read()
+except Exception:
+    print(''); sys.exit()
+for m in re.finditer(r'text="([^"]+)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', t):
+    if m.group(1).strip().lower() in ('agree', '同意', 'allow'):
+        x = (int(m.group(2)) + int(m.group(4))) // 2
+        y = (int(m.group(3)) + int(m.group(5))) // 2
+        print(f'{x} {y}'); sys.exit()
+print('')
+EOF
+)
+            echo "round=$round coord=$COORD"
+            if [ -n "$COORD" ]; then $A shell input tap $COORD; fi
+            sleep 3
+          done
+          $A exec-out screencap -p > after_notice.png || true
           $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
-          sleep 20
-          $A exec-out screencap -p > xhs1.png || true
-          $A shell dumpsys window | grep mCurrentFocus || true
-          $A shell input tap 540 620 || true
-          sleep 8
-          $A exec-out screencap -p > xhs2.png || true
+          sleep 25
+          $A exec-out screencap -p > xhs_a.png || true
+          $A shell uiautomator dump /sdcard/ui2.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/ui2.xml > ui2.xml 2>/dev/null || true
+          python3 - <<'EOF' || true
+import re
+try:
+    t = open('ui2.xml', encoding='utf-8', errors='replace').read()
+    for m in re.finditer(r'text="([^"]{1,40})"', t):
+        print('TEXT:', m.group(1))
+except Exception as e:
+    print('parse err', e)
+EOF
+          $A shell input tap 540 1000 || true
+          sleep 12
+          $A exec-out screencap -p > xhs_b.png || true
           $A logcat -d > logcat.txt 2>&1 || true
-          ls -l *.png *.txt || true
+          ls -l *.png *.txt *.xml || true
 
       - name: Upload artifacts
         if: always()
@@ -94,7 +113,9 @@ jobs:
         with:
           name: redroid-xhs
           path: |
-            notice_dismissed.png
-            xhs1.png
-            xhs2.png
+            after_notice.png
+            xhs_a.png
+            xhs_b.png
             logcat.txt
+            ui.xml
+            ui2.xml
