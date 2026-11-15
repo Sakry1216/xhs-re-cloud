@@ -44,7 +44,7 @@ jobs:
       - name: Adb setup
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq adb curl python3 2>/dev/null || true
+          sudo apt-get install -y -qq adb curl python3 xz-utils 2>/dev/null || true
           adb kill-server || true
           adb start-server || true
           adb disconnect || true
@@ -67,21 +67,21 @@ jobs:
           timeout 600 $A install -r xhs.apk 2>&1 | tail -3 || true
           $A shell pm list packages | grep xingin || true
 
-      - name: Launch XHS and accept privacy
+      - name: Drive XHS to login
         run: |
           A="adb -s 127.0.0.1:5555"
           $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
-          for round in 1 2 3 4 5; do
-            sleep 6
+          for round in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 4
             $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
             $A shell cat /sdcard/ui.xml > ui.xml 2>/dev/null || true
-            COORD=$(python3 scripts/tap_text.py ui.xml "Agree,同意,agree" || true)
+            COORD=$(python3 scripts/tap_text.py ui.xml "ALLOW,Allow,允许,Agree,同意,我知道了,知道了,继续,下一步,Skip,跳过,Not Now,暂不,稍后" || true)
             echo "round=$round coord=[$COORD]"
             if [ -n "$COORD" ]; then $A shell input tap $COORD || true; fi
             $A exec-out screencap -p > round_$round.png || true
           done
-          sleep 10
-          $A exec-out screencap -p > after_privacy.png || true
+          sleep 5
+          $A exec-out screencap -p > final.png || true
           $A shell uiautomator dump /sdcard/ui2.xml >/dev/null 2>&1 || true
           $A shell cat /sdcard/ui2.xml > ui2.xml 2>/dev/null || true
           python3 scripts/dump_ui.py ui2.xml || true
@@ -99,7 +99,12 @@ jobs:
             round_3.png
             round_4.png
             round_5.png
-            after_privacy.png
+            round_6.png
+            round_7.png
+            round_8.png
+            round_9.png
+            round_10.png
+            final.png
             logcat.txt
             ui.xml
             ui2.xml
