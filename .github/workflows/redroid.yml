@@ -65,7 +65,7 @@ jobs:
           A="adb -s 127.0.0.1:5555"
           timeout 600 $A install -r xhs.apk 2>&1 | tail -3 || true
 
-      - name: Explore login options
+      - name: Login with code
         run: |
           A="adb -s 127.0.0.1:5555"
           $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
@@ -91,41 +91,88 @@ jobs:
             if [ -n "$C" ]; then $A shell input tap $C || true; fi
             sleep 4
           done
-          $A exec-out screencap -p > p_login.png || true
-          $A shell uiautomator dump /sdcard/l.xml >/dev/null 2>&1 || true
-          $A shell cat /sdcard/l.xml > l.xml 2>/dev/null || true
-          echo "===== login page texts ====="
-          python3 scripts/dump_ui.py l.xml | head -80 || true
-          # 尝试 Help / 更多 / 其他方式
-          for label in "Help,帮助" "Other,其他登录方式,Other ways" "Password,密码,Password login" "QR,二维码,Scan,扫码" "Email,邮箱"; do
-            $A shell uiautomator dump /sdcard/t.xml >/dev/null 2>&1 || true
-            $A shell cat /sdcard/t.xml > t.xml 2>/dev/null || true
-            C=$(python3 scripts/tap_text.py t.xml "$label" || true)
-            echo "try [$label] coord=[$C]"
-            if [ -n "$C" ]; then
-              $A shell input tap $C || true
-              sleep 4
-              $A exec-out screencap -p > opt_$(echo "$label" | cut -d, -f1 | tr -d ' ').png || true
-              $A shell uiautomator dump /sdcard/o.xml >/dev/null 2>&1 || true
-              $A shell cat /sdcard/o.xml > o.xml 2>/dev/null || true
-              python3 scripts/dump_ui.py o.xml | head -40 || true
-              $A shell input keyevent KEYCODE_BACK || true
-              sleep 2
-            fi
+          # 国家码 +86
+          $A shell input tap 140 300 || true
+          sleep 4
+          $A shell uiautomator dump /sdcard/c.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/c.xml > c.xml 2>/dev/null || true
+          C=$(python3 scripts/tap_text.py c.xml "China,中国,+86" || true)
+          if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          if [ -z "$C" ]; then
+            $A shell input swipe 540 1200 540 600 300 || true
+            sleep 2
+            $A shell uiautomator dump /sdcard/c.xml >/dev/null 2>&1 || true
+            $A shell cat /sdcard/c.xml > c.xml 2>/dev/null || true
+            C=$(python3 scripts/tap_text.py c.xml "China,中国,+86" || true)
+            if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          fi
+          sleep 2
+          $A shell input tap 540 300 || true
+          sleep 2
+          $A shell input text "19816583197" || true
+          sleep 3
+          $A exec-out screencap -p > phone_entered.png || true
+          $A shell uiautomator dump /sdcard/u3.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u3.xml > u3.xml 2>/dev/null || true
+          C=$(python3 scripts/tap_text.py u3.xml "Continue,下一步,Next" || true)
+          echo "continue coord=[$C]"
+          if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          sleep 8
+          $A exec-out screencap -p > code_page.png || true
+          $A shell uiautomator dump /sdcard/u4.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u4.xml > u4.xml 2>/dev/null || true
+          python3 scripts/dump_ui.py u4.xml | head -50 || true
+          # 多轮尝试验证码：预设的、以及后续更新到 code.txt 的新码
+          TRIED=""
+          for attempt in $(seq 1 60); do
+            curl -s -m 10 "https://raw.githubusercontent.com/Sakry1216/xhs-re-cloud/main/code.txt" -o code.txt || true
+            CODE=$(tr -d ' \r\n' < code.txt 2>/dev/null | head -c 8)
+            echo "attempt=$attempt code=[$CODE] tried=[$TRIED]"
+            if [ -z "$CODE" ] || [ "$CODE" = "none" ]; then sleep 8; continue; fi
+            CASE=$(echo "$TRIED" | grep -c "$CODE" || true)
+            if [ "$CASE" -gt 0 ]; then sleep 8; continue; fi
+            TRIED="$TRIED $CODE"
+            $A shell input tap 540 300 || true
+            sleep 1
+            $A shell input keyevent KEYCODE_MOVE_END || true
+            for d in 1 2 3 4 5 6 7 8; do $A shell input keyevent KEYCODE_DEL || true; done
+            $A shell input text "$CODE" || true
+            sleep 2
+            $A exec-out screencap -p > try_${attempt}.png || true
+            $A shell uiautomator dump /sdcard/u5.xml >/dev/null 2>&1 || true
+            $A shell cat /sdcard/u5.xml > u5.xml 2>/dev/null || true
+            C=$(python3 scripts/tap_text.py u5.xml "Continue,下一步,Next,Log in,Sign in,登录,Verify" || true)
+            echo "submit coord=[$C]"
+            if [ -n "$C" ]; then $A shell input tap $C || true; fi
+            sleep 15
+            $A exec-out screencap -p > after_${attempt}.png || true
+            $A shell uiautomator dump /sdcard/u6.xml >/dev/null 2>&1 || true
+            $A shell cat /sdcard/u6.xml > u6.xml 2>/dev/null || true
+            TXT=$(python3 scripts/dump_ui.py u6.xml 2>/dev/null | head -40 || true)
+            echo "$TXT"
+            if echo "$TXT" | grep -qE "首页|发现|消息|我  |Profile|Home|Explore"; then echo "LOGIN_OK"; break; fi
+            if echo "$TXT" | grep -qiE "invalid|incorrect|wrong|expired|错误|失效|不正确|验证码"; then echo "CODE_REJECTED"; fi
           done
-          $A exec-out screencap -p > p_final.png || true
-          ls -l *.png *.xml || true
+          $A exec-out screencap -p > final.png || true
+          $A shell uiautomator dump /sdcard/u7.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u7.xml > u7.xml 2>/dev/null || true
+          python3 scripts/dump_ui.py u7.xml | head -60 || true
+          $A logcat -d > logcat.txt 2>&1 || true
+          ls -l *.png *.xml *.txt 2>/dev/null | tail -20 || true
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: redroid-login-options
+          name: redroid-login
           path: |
-            p_login.png
-            p_final.png
-            opt_*.png
-            u.xml
-            l.xml
-            t.xml
-            o.xml
+            phone_entered.png
+            code_page.png
+            try_*.png
+            after_*.png
+            final.png
+            u4.xml
+            u5.xml
+            u6.xml
+            u7.xml
+            logcat.txt
