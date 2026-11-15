@@ -1,0 +1,16 @@
+name: hello
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: uname -a; echo hello-cloud
+      - name: try macos label
+        run: echo macos-test
+  mac:
+    runs-on: macos-14
+    steps:
+      - run: uname -a; sw_vers
