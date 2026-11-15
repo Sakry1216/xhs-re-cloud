@@ -14,13 +14,10 @@ jobs:
         run: |
           set -x
           FOUND=""
-          for IMG in \
-            redroid/redroid:13.0.0-arm64 redroid/redroid:12.0.0-arm64 redroid/redroid:11.0.0-arm64 \
-            redroid/redroid:13.0.0-latest redroid/redroid:12.0.0-latest redroid/redroid:11.0.0-latest; do
-            echo "== try $IMG"
+          for IMG in redroid/redroid:13.0.0-arm64 redroid/redroid:12.0.0-arm64 redroid/redroid:11.0.0-arm64 redroid/redroid:13.0.0-latest redroid/redroid:12.0.0-latest redroid/redroid:11.0.0-latest; do
             if timeout 300 docker pull "$IMG" 2>&1 | tail -2; then
               A=$(docker image inspect --format '{{.Architecture}}' "$IMG" 2>/dev/null || echo "?")
-              echo "arch=$A"
+              echo "$IMG arch=$A"
               if [ "$A" = "arm64" ]; then FOUND="$IMG"; break; fi
             fi
           done
@@ -42,69 +39,62 @@ jobs:
             androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320
           sleep 30
           docker ps -a
-          timeout 20 docker logs redroid 2>&1 | tail -40 || true
 
-      - name: Adb connect and probe
+      - name: Adb setup
         run: |
           set -x
           sudo apt-get update -qq
-          sudo apt-get install -y -qq adb curl 2>/dev/null || true
+          sudo apt-get install -y -qq adb curl xz-utils python3-pip 2>/dev/null || true
           adb kill-server || true
           adb start-server || true
           adb disconnect || true
-          sleep 3
+          sleep 2
           adb connect 127.0.0.1:5555 || true
           sleep 5
           adb devices -l
           A="adb -s 127.0.0.1:5555"
           for i in $(seq 1 40); do
-            echo "-- attempt $i"
-            $A shell getprop sys.boot_completed 2>&1 | head -2 || true
             B=$($A shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            if [ "$B" = "1" ]; then echo BOOTED; break; fi
+            [ "$B" = "1" ] && { echo BOOTED; break; }
             sleep 5
           done
-          echo "=== props ==="
+          $A shell id || true
           $A shell getprop ro.build.version.release || true
           $A shell getprop ro.product.cpu.abilist || true
-          $A shell "ls /system/lib/arm 2>/dev/null | head -3" || true
-          echo "=== uname ==="
-          $A shell uname -a || true
 
       - name: Install XHS
         run: |
           set -x
           curl -L --retry 3 -o xhs.apk "https://github.com/Sakry1216/xhs-re-cloud/releases/download/apk-v1/xhs_official.apk"
-          ls -l xhs.apk
           A="adb -s 127.0.0.1:5555"
-          timeout 600 $A install -r xhs.apk 2>&1 | tail -5 || echo INSTALL_TRY_FAILED
-          timeout 20 $A shell pm list packages 2>/dev/null | grep xingin || true
+          timeout 600 $A install -r xhs.apk 2>&1 | tail -3 || true
+          $A shell pm list packages | grep xingin || true
 
-      - name: Launch XHS
+      - name: Dismiss notice + launch XHS
         run: |
           set -x
           A="adb -s 127.0.0.1:5555"
-          timeout 20 $A shell settings put global window_animation_scale 0 || true
-          timeout 20 $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
-          sleep 40
-          timeout 20 $A shell dumpsys window | grep mCurrentFocus || true
-          timeout 20 $A shell pidof com.xingin.xhs || true
-          timeout 90 $A exec-out screencap -p > shot1.png || true
-          timeout 60 $A logcat -d > logcat.txt 2>&1 || true
-          ls -l shot1.png logcat.txt || true
-          tail -200 logcat.txt || true
-
-      - name: Diagnostics
-        if: always()
-        run: |
-          timeout 30 docker logs redroid 2>&1 | tail -80 || true
-          adb devices -l || true
+          $A shell input tap 540 1215 || true
+          sleep 4
+          $A exec-out screencap -p > notice_dismissed.png || true
+          $A shell settings put global window_animation_scale 0 || true
+          $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
+          sleep 20
+          $A exec-out screencap -p > xhs1.png || true
+          $A shell dumpsys window | grep mCurrentFocus || true
+          $A shell input tap 540 620 || true
+          sleep 8
+          $A exec-out screencap -p > xhs2.png || true
+          $A logcat -d > logcat.txt 2>&1 || true
+          ls -l *.png *.txt || true
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: redroid-run
+          name: redroid-xhs
           path: |
-            shot1.png
+            notice_dismissed.png
+            xhs1.png
+            xhs2.png
             logcat.txt
