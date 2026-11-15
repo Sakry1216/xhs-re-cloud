@@ -44,7 +44,7 @@ jobs:
       - name: Adb setup
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq adb curl python3 xz-utils 2>/dev/null || true
+          sudo apt-get install -y -qq adb curl python3 2>/dev/null || true
           adb kill-server || true
           adb start-server || true
           adb disconnect || true
@@ -59,32 +59,50 @@ jobs:
             sleep 5
           done
           $A shell id || true
+          $A shell settings put system system_locales zh-CN || true
 
       - name: Install XHS
         run: |
           curl -L --retry 3 -o xhs.apk "https://github.com/Sakry1216/xhs-re-cloud/releases/download/apk-v1/xhs_official.apk"
           A="adb -s 127.0.0.1:5555"
           timeout 600 $A install -r xhs.apk 2>&1 | tail -3 || true
-          $A shell pm list packages | grep xingin || true
 
-      - name: Drive XHS to login
+      - name: Drive to login
         run: |
           A="adb -s 127.0.0.1:5555"
           $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
-          for round in 1 2 3 4 5 6 7 8 9 10; do
-            sleep 4
-            $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
-            $A shell cat /sdcard/ui.xml > ui.xml 2>/dev/null || true
-            COORD=$(python3 scripts/tap_text.py ui.xml "ALLOW,Allow,允许,Agree,同意,我知道了,知道了,继续,下一步,Skip,跳过,Not Now,暂不,稍后" || true)
-            echo "round=$round coord=[$COORD]"
-            if [ -n "$COORD" ]; then $A shell input tap $COORD || true; fi
-            $A exec-out screencap -p > round_$round.png || true
+          sleep 12
+          # 第一轮：同意隐私
+          $A shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u.xml > u.xml 2>/dev/null || true
+          C=$(python3 scripts/tap_text.py u.xml "Agree,同意" || true)
+          echo "privacy coord=[$C]"
+          if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          sleep 6
+          # 权限弹窗 ALLOW
+          for i in 1 2 3; do
+            $A shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1 || true
+            $A shell cat /sdcard/u.xml > u.xml 2>/dev/null || true
+            C=$(python3 scripts/tap_text.py u.xml "ALLOW,Allow,允许" || true)
+            echo "perm$i coord=[$C]"
+            if [ -n "$C" ]; then $A shell input tap $C || true; fi
+            sleep 3
           done
-          sleep 5
-          $A exec-out screencap -p > final.png || true
-          $A shell uiautomator dump /sdcard/ui2.xml >/dev/null 2>&1 || true
-          $A shell cat /sdcard/ui2.xml > ui2.xml 2>/dev/null || true
-          python3 scripts/dump_ui.py ui2.xml || true
+          $A shell input keyevent KEYCODE_BACK || true
+          sleep 3
+          $A exec-out screencap -p > s1.png || true
+          for round in 1 2 3 4 5 6; do
+            $A shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1 || true
+            $A shell cat /sdcard/u.xml > u.xml 2>/dev/null || true
+            C=$(python3 scripts/tap_text.py u.xml "Sign in,Log in,登录,Phone,手机号,Continue,Next,下一步,Get started" || true)
+            echo "nav$round coord=[$C]"
+            if [ -n "$C" ]; then $A shell input tap $C || true; fi
+            sleep 4
+            $A exec-out screencap -p > n$round.png || true
+          done
+          $A shell uiautomator dump /sdcard/u2.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u2.xml > u2.xml 2>/dev/null || true
+          python3 scripts/dump_ui.py u2.xml || true
           $A logcat -d > logcat.txt 2>&1 || true
           ls -l *.png *.xml *.txt || true
 
@@ -94,17 +112,13 @@ jobs:
         with:
           name: redroid-xhs
           path: |
-            round_1.png
-            round_2.png
-            round_3.png
-            round_4.png
-            round_5.png
-            round_6.png
-            round_7.png
-            round_8.png
-            round_9.png
-            round_10.png
-            final.png
+            s1.png
+            n1.png
+            n2.png
+            n3.png
+            n4.png
+            n5.png
+            n6.png
+            u.xml
+            u2.xml
             logcat.txt
-            ui.xml
-            ui2.xml
