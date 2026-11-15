@@ -1,0 +1,73 @@
+name: cloud-emu
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  emu:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Info
+        run: |
+          uname -a
+          sysctl -n machdep.cpu.brand_string || true
+
+      - name: Install Android SDK
+        run: |
+          set -e
+          export ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -sSL -o /tmp/cmdline.zip "https://dl.google.com/android/repository/commandlinetools-mac-11076708_latest.zip"
+          unzip -q /tmp/cmdline.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platform-tools" "emulator" "system-images;android-30;google_apis;arm64-v8a" | tail -5
+
+      - name: Create AVD and boot emulator
+        run: |
+          set -e
+          export ANDROID_HOME="$HOME/android-sdk"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          echo no | avdmanager create avd -n test -k "system-images;android-30;google_apis;arm64-v8a" -d pixel || true
+          emulator -avd test -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -memory 3072 > /tmp/emu.log 2>&1 &
+          adb wait-for-device
+          for i in $(seq 1 60); do
+            b=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$b" = "1" ]; then echo "booted after $i"; break; fi
+            sleep 5
+          done
+          adb shell getprop ro.build.version.release
+          adb shell getprop ro.product.cpu.abilist
+          adb shell settings put global window_animation_scale 0 || true
+          adb root || true
+          sleep 3
+          adb wait-for-device
+
+      - name: Download XHS APK
+        run: |
+          curl -L --retry 3 -o xhs.apk "https://github.com/Sakry1216/xhs-re-cloud/releases/download/apk-v1/xhs_official.apk"
+          ls -l xhs.apk
+
+      - name: Install and launch XHS
+        run: |
+          export PATH="$HOME/android-sdk/platform-tools:$PATH"
+          adb install -r xhs.apk || adb install -r --no-streaming xhs.apk || echo "INSTALL_FAILED"
+          adb shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
+          sleep 25
+          adb shell dumpsys window | grep mCurrentFocus || true
+          adb shell pidof com.xingin.xhs || true
+          adb shell screencap -p /sdcard/s1.png && adb pull /sdcard/s1.png shot1.png || true
+          adb logcat -d | tail -400 > logcat.txt || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emu-first-run
+          path: |
+            shot1.png
+            logcat.txt
+            /tmp/emu.log
