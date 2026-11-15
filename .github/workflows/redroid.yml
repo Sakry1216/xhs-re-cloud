@@ -9,9 +9,6 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
-      - name: System info
-        run: uname -a; nproc; free -h; docker --version
-
       - name: Pull redroid arm64
         id: img
         run: |
@@ -19,10 +16,9 @@ jobs:
           FOUND=""
           for IMG in \
             redroid/redroid:13.0.0-arm64 redroid/redroid:12.0.0-arm64 redroid/redroid:11.0.0-arm64 \
-            redroid/redroid:13.0.0-latest redroid/redroid:12.0.0-latest redroid/redroid:11.0.0-latest \
-            redroid/redroid:13.0.0_64only-latest redroid/redroid:12.0.0_64only-latest; do
+            redroid/redroid:13.0.0-latest redroid/redroid:12.0.0-latest redroid/redroid:11.0.0-latest; do
             echo "== try $IMG"
-            if timeout 300 docker pull "$IMG" 2>&1 | tail -3; then
+            if timeout 300 docker pull "$IMG" 2>&1 | tail -2; then
               A=$(docker image inspect --format '{{.Architecture}}' "$IMG" 2>/dev/null || echo "?")
               echo "arch=$A"
               if [ "$A" = "arm64" ]; then FOUND="$IMG"; break; fi
@@ -40,58 +36,69 @@ jobs:
           sudo modprobe binder_linux || true
           sudo mkdir -p /dev/binderfs
           sudo mount -t binder binder /dev/binderfs || true
-          ls -l /dev/binderfs || true
-          docker pull "$IMG"
           docker run -d --privileged --name redroid -p 5555:5555 \
             -v /dev/binderfs:/dev/binderfs \
             "$IMG" \
             androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320
           sleep 30
           docker ps -a
-          timeout 20 docker logs redroid 2>&1 | tail -60 || true
+          timeout 20 docker logs redroid 2>&1 | tail -40 || true
 
-      - name: Setup adb
+      - name: Adb connect and probe
         run: |
           set -x
           sudo apt-get update -qq
           sudo apt-get install -y -qq adb curl 2>/dev/null || true
+          adb kill-server || true
           adb start-server || true
-          for i in $(seq 1 40); do timeout 10 adb connect 127.0.0.1:5555 && break; sleep 3; done
-          sleep 8
-          adb devices
-          for i in $(seq 1 24); do
-            B=$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            echo "boot=$B"; [ "$B" = "1" ] && break; sleep 5
+          adb disconnect || true
+          sleep 3
+          adb connect 127.0.0.1:5555 || true
+          sleep 5
+          adb devices -l
+          A="adb -s 127.0.0.1:5555"
+          for i in $(seq 1 40); do
+            echo "-- attempt $i"
+            $A shell getprop sys.boot_completed 2>&1 | head -2 || true
+            B=$($A shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$B" = "1" ]; then echo BOOTED; break; fi
+            sleep 5
           done
-          timeout 20 adb shell getprop ro.build.version.release || true
-          timeout 20 adb shell getprop ro.product.cpu.abilist || true
-          timeout 20 adb shell "ls /system/lib/arm 2>/dev/null | head -3" || true
+          echo "=== props ==="
+          $A shell getprop ro.build.version.release || true
+          $A shell getprop ro.product.cpu.abilist || true
+          $A shell "ls /system/lib/arm 2>/dev/null | head -3" || true
+          echo "=== uname ==="
+          $A shell uname -a || true
 
       - name: Install XHS
         run: |
           set -x
           curl -L --retry 3 -o xhs.apk "https://github.com/Sakry1216/xhs-re-cloud/releases/download/apk-v1/xhs_official.apk"
           ls -l xhs.apk
-          timeout 600 adb install -r xhs.apk || timeout 600 adb install -r --no-streaming xhs.apk || echo INSTALL_FAILED
-          timeout 20 adb shell pm list packages | grep xingin || true
+          A="adb -s 127.0.0.1:5555"
+          timeout 600 $A install -r xhs.apk 2>&1 | tail -5 || echo INSTALL_TRY_FAILED
+          timeout 20 $A shell pm list packages 2>/dev/null | grep xingin || true
 
       - name: Launch XHS
         run: |
           set -x
-          timeout 20 adb shell settings put global window_animation_scale 0 || true
-          timeout 20 adb shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
+          A="adb -s 127.0.0.1:5555"
+          timeout 20 $A shell settings put global window_animation_scale 0 || true
+          timeout 20 $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
           sleep 40
-          timeout 20 adb shell dumpsys window | grep mCurrentFocus || true
-          timeout 20 adb shell pidof com.xingin.xhs || true
-          timeout 60 adb shell screencap -p /sdcard/s1.png && timeout 60 adb pull /sdcard/s1.png shot1.png || true
-          timeout 60 adb logcat -d > logcat.txt || true
-          tail -300 logcat.txt || true
+          timeout 20 $A shell dumpsys window | grep mCurrentFocus || true
+          timeout 20 $A shell pidof com.xingin.xhs || true
+          timeout 90 $A exec-out screencap -p > shot1.png || true
+          timeout 60 $A logcat -d > logcat.txt 2>&1 || true
           ls -l shot1.png logcat.txt || true
+          tail -200 logcat.txt || true
 
       - name: Diagnostics
         if: always()
         run: |
-          timeout 30 docker logs redroid 2>&1 | tail -100 || true
+          timeout 30 docker logs redroid 2>&1 | tail -80 || true
+          adb devices -l || true
 
       - name: Upload artifacts
         if: always()
