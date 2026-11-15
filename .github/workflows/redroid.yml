@@ -58,7 +58,6 @@ jobs:
             if [ "$B" = "1" ]; then echo BOOTED; break; fi
             sleep 5
           done
-          $A shell id || true
           $A shell settings put system system_locales zh-CN || true
 
       - name: Install XHS
@@ -67,58 +66,116 @@ jobs:
           A="adb -s 127.0.0.1:5555"
           timeout 600 $A install -r xhs.apk 2>&1 | tail -3 || true
 
-      - name: Drive to login
+      - name: Go to login page
         run: |
           A="adb -s 127.0.0.1:5555"
           $A shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
           sleep 12
-          # 第一轮：同意隐私
           $A shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1 || true
           $A shell cat /sdcard/u.xml > u.xml 2>/dev/null || true
           C=$(python3 scripts/tap_text.py u.xml "Agree,同意" || true)
-          echo "privacy coord=[$C]"
           if [ -n "$C" ]; then $A shell input tap $C || true; fi
           sleep 6
-          # 权限弹窗 ALLOW
           for i in 1 2 3; do
             $A shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1 || true
             $A shell cat /sdcard/u.xml > u.xml 2>/dev/null || true
             C=$(python3 scripts/tap_text.py u.xml "ALLOW,Allow,允许" || true)
-            echo "perm$i coord=[$C]"
             if [ -n "$C" ]; then $A shell input tap $C || true; fi
             sleep 3
           done
           $A shell input keyevent KEYCODE_BACK || true
           sleep 3
-          $A exec-out screencap -p > s1.png || true
           for round in 1 2 3 4 5 6; do
             $A shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1 || true
             $A shell cat /sdcard/u.xml > u.xml 2>/dev/null || true
-            C=$(python3 scripts/tap_text.py u.xml "Sign in,Log in,登录,Phone,手机号,Continue,Next,下一步,Get started" || true)
+            C=$(python3 scripts/tap_text.py u.xml "Get started,Sign in,Log in,登录,Continue,Next" || true)
             echo "nav$round coord=[$C]"
             if [ -n "$C" ]; then $A shell input tap $C || true; fi
             sleep 4
-            $A exec-out screencap -p > n$round.png || true
           done
-          $A shell uiautomator dump /sdcard/u2.xml >/dev/null 2>&1 || true
-          $A shell cat /sdcard/u2.xml > u2.xml 2>/dev/null || true
-          python3 scripts/dump_ui.py u2.xml || true
-          $A logcat -d > logcat.txt 2>&1 || true
-          ls -l *.png *.xml *.txt || true
+          $A exec-out screencap -p > login_page.png || true
+
+      - name: Enter phone and wait for code
+        run: |
+          A="adb -s 127.0.0.1:5555"
+          # 选国家码 +86：点下拉，找 China
+          $A shell input tap 140 300 || true
+          sleep 4
+          $A shell uiautomator dump /sdcard/c.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/c.xml > c.xml 2>/dev/null || true
+          python3 scripts/dump_ui.py c.xml | head -40 || true
+          C=$(python3 scripts/tap_text.py c.xml "China,中国,+86" || true)
+          echo "country coord=[$C]"
+          if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          if [ -z "$C" ]; then
+            $A shell input swipe 540 1200 540 600 300 || true
+            sleep 2
+            $A shell uiautomator dump /sdcard/c.xml >/dev/null 2>&1 || true
+            $A shell cat /sdcard/c.xml > c.xml 2>/dev/null || true
+            C=$(python3 scripts/tap_text.py c.xml "China,中国,+86" || true)
+            echo "country2 coord=[$C]"
+            if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          fi
+          sleep 2
+          # 输入手机号
+          $A shell input tap 540 300 || true
+          sleep 2
+          $A shell input text "19816583197" || true
+          sleep 3
+          $A exec-out screencap -p > phone_entered.png || true
+          # 点 Continue
+          $A shell uiautomator dump /sdcard/u3.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u3.xml > u3.xml 2>/dev/null || true
+          C=$(python3 scripts/tap_text.py u3.xml "Continue,下一步,Next" || true)
+          echo "continue coord=[$C]"
+          if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          sleep 8
+          $A exec-out screencap -p > code_page.png || true
+          $A shell uiautomator dump /sdcard/u4.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u4.xml > u4.xml 2>/dev/null || true
+          python3 scripts/dump_ui.py u4.xml | head -60 || true
+          echo "PHONE_SUBMITTED"
+          # 轮询仓库里的 code.txt（由本机提交验证码）
+          CODE=""
+          for i in $(seq 1 260); do
+            curl -s -m 10 "https://raw.githubusercontent.com/Sakry1216/xhs-re-cloud/main/code.txt" -o code.txt || true
+            CODE=$(tr -d ' \r\n' < code.txt 2>/dev/null | head -c 8)
+            echo "poll $i code=[$CODE]"
+            if [ -n "$CODE" ] && [ "$CODE" != "none" ]; then break; fi
+            sleep 10
+          done
+          if [ -z "$CODE" ] || [ "$CODE" = "none" ]; then echo "NO_CODE_TIMEOUT"; $A exec-out screencap -p > timeout.png || true; exit 0; fi
+          # 填验证码
+          $A shell input tap 540 300 || true
+          sleep 2
+          $A shell input text "$CODE" || true
+          sleep 3
+          $A shell uiautomator dump /sdcard/u5.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u5.xml > u5.xml 2>/dev/null || true
+          C=$(python3 scripts/tap_text.py u5.xml "Continue,下一步,Next,Log in,Sign in,登录" || true)
+          echo "submit coord=[$C]"
+          if [ -n "$C" ]; then $A shell input tap $C || true; fi
+          sleep 20
+          $A exec-out screencap -p > after_login.png || true
+          $A shell uiautomator dump /sdcard/u6.xml >/dev/null 2>&1 || true
+          $A shell cat /sdcard/u6.xml > u6.xml 2>/dev/null || true
+          python3 scripts/dump_ui.py u6.xml | head -80 || true
+          $A shell pidof com.xingin.xhs || true
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: redroid-xhs
+          name: redroid-login
           path: |
-            s1.png
-            n1.png
-            n2.png
-            n3.png
-            n4.png
-            n5.png
-            n6.png
+            login_page.png
+            phone_entered.png
+            code_page.png
+            timeout.png
+            after_login.png
             u.xml
-            u2.xml
-            logcat.txt
+            c.xml
+            u3.xml
+            u4.xml
+            u5.xml
+            u6.xml
