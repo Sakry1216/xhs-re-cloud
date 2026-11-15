@@ -1,0 +1,81 @@
+name: redroid-xhs
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  redroid:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: System info
+        run: uname -a; nproc; free -h; docker --version
+
+      - name: Binder + redroid
+        run: |
+          set -x
+          sudo modprobe binder_linux || true
+          sudo mkdir -p /dev/binderfs
+          sudo mount -t binder binder /dev/binderfs || true
+          ls -l /dev/binder* || true
+          docker pull redroid/redroid:11.0.0_arm64 || docker pull redroid/redroid:11.0.0_arm64-latest || exit 1
+          docker run -d --privileged --name redroid -p 5555:5555 \
+            -v /dev/binderfs:/dev/binderfs \
+            redroid/redroid:11.0.0_arm64 \
+            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320
+          sleep 20
+          docker ps -a
+          docker logs redroid 2>&1 | tail -40
+
+      - name: Setup adb
+        run: |
+          set -x
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb curl jq || sudo apt-get install -y -qq adb curl jq
+          adb version
+          adb start-server
+          for i in $(seq 1 30); do
+            adb connect 127.0.0.1:5555 && break
+            sleep 3
+          done
+          sleep 10
+          adb devices
+          adb shell getprop ro.build.version.release || true
+          adb shell getprop ro.product.cpu.abilist || true
+          adb shell "ls /system/lib/arm 2>/dev/null | head -3" || true
+
+      - name: Install XHS
+        run: |
+          set -x
+          curl -L --retry 3 -o xhs.apk "https://github.com/Sakry1216/xhs-re-cloud/releases/download/apk-v1/xhs_official.apk"
+          ls -l xhs.apk
+          adb install -r xhs.apk || adb install -r --no-streaming xhs.apk || echo INSTALL_FAILED
+          adb shell pm list packages | grep xingin || true
+
+      - name: Launch XHS
+        run: |
+          set -x
+          adb shell settings put global window_animation_scale 0 || true
+          adb shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
+          sleep 30
+          adb shell dumpsys window | grep mCurrentFocus || true
+          adb shell pidof com.xingin.xhs || true
+          adb shell screencap -p /sdcard/s1.png && adb pull /sdcard/s1.png shot1.png || true
+          adb logcat -d | tail -600 > logcat.txt || true
+          ls -l shot1.png logcat.txt || true
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          docker logs redroid 2>&1 | tail -80 || true
+          adb devices || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redroid-run
+          path: |
+            shot1.png
+            logcat.txt
