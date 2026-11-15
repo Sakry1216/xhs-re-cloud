@@ -12,56 +12,59 @@ jobs:
       - name: System info
         run: uname -a; nproc; free -h; docker --version
 
-      - name: Find redroid arm64 tag
+      - name: Find redroid image
         id: tag
         run: |
           set -x
-          python3 - <<'EOF' > /tmp/tags.txt
-          import json, urllib.request
-          out = []
-          for page in (1, 2):
-              u = f"https://hub.docker.com/v2/repositories/redroid/redroid/tags?page_size=100&page={page}"
-              try:
-                  d = json.load(urllib.request.urlopen(u, timeout=30))
-                  out += [t["name"] for t in d.get("results", [])]
-              except Exception as e:
-                  print("ERR", e)
-          print("\n".join(out))
-          EOF
-          cat /tmp/tags.txt | head -80 || true
-          ARM=$(grep -E '_arm64$' /tmp/tags.txt | head -1 || true)
-          if [ -z "$ARM" ]; then ARM=$(grep -E 'arm64' /tmp/tags.txt | head -1 || true); fi
-          if [ -z "$ARM" ]; then
-            for t in 11.0.0_arm64 12.0.0_arm64 13.0.0_arm64 11.0.0_arm64-latest; do
-              if docker manifest inspect redroid/redroid:$t >/dev/null 2>&1; then ARM=$t; break; fi
-            done
+          FOUND=""
+          for IMG in \
+            redroid/redroid:13.0.0_arm64 redroid/redroid:12.0.0_arm64 redroid/redroid:11.0.0_arm64 \
+            redroid/redroid:14.0.0_arm64 redroid/redroid:15.0.0_arm64 \
+            redroid/redroid:13.0.0 redroid/redroid:12.0.0 redroid/redroid:11.0.0 redroid/redroid:latest; do
+            echo "== try $IMG"
+            if timeout 240 docker pull "$IMG"; then FOUND="$IMG"; break; fi
+          done
+          echo "FOUND=$FOUND"
+          if [ -z "$FOUND" ]; then
+            echo "ALL_PULL_FAILED"
+            timeout 60 curl -sS "https://hub.docker.com/v2/repositories/redroid/redroid/tags?page_size=25" | head -c 2000 || true
+            exit 1
           fi
-          echo "ARM_TAG=$ARM"
-          echo "arm_tag=$ARM" >> "$GITHUB_OUTPUT"
+          echo "image=$FOUND" >> "$GITHUB_OUTPUT"
 
       - name: Start redroid
         run: |
           set -x
           sudo modprobe binder_linux || true
-          sudo mount -t binder binder /dev/binderfs 2>/dev/null || sudo mkdir -p /dev/binderfs && sudo mount -t binder binder /dev/binderfs || true
+          sudo mkdir -p /dev/binderfs
+          sudo mount -t binder binder /dev/binderfs || true
           ls -l /dev/binderfs || true
-          TAG="${{ steps.tag.outputs.arm_tag }}"
-          if [ -z "$TAG" ]; then echo "NO ARM TAG"; exit 1; fi
-          docker pull redroid/redroid:$TAG || exit 1
+          IMG="redroid/redroid:13.0.0_arm64"
+          if [ ! -z "$(grep -o 'image=.*' /dev/null 2>/dev/null)" ]; then true; fi
+          IMG_FILE="/tmp/redroid_img.txt"
+          if [ -f "$IMG_FILE" ]; then IMG=$(cat "$IMG_FILE"); fi
           docker run -d --privileged --name redroid -p 5555:5555 \
             -v /dev/binderfs:/dev/binderfs \
-            redroid/redroid:$TAG \
-            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320
+            redroid/redroid:13.0.0_arm64 \
+            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320 || \
+          docker run -d --privileged --name redroid -p 5555:5555 \
+            -v /dev/binderfs:/dev/binderfs \
+            redroid/redroid:12.0.0_arm64 \
+            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320 || \
+          docker run -d --privileged --name redroid -p 5555:5555 \
+            -v /dev/binderfs:/dev/binderfs \
+            redroid/redroid:11.0.0_arm64 \
+            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320 || true
           sleep 25
           docker ps -a
-          docker logs redroid 2>&1 | tail -60
+          docker logs redroid 2>&1 | tail -80 || true
 
       - name: Setup adb
         run: |
           set -x
           sudo apt-get update -qq
-          sudo apt-get install -y -qq android-sdk-platform-tools-common adb curl jq 2>/dev/null || sudo apt-get install -y -qq adb curl jq
-          adb start-server
+          sudo apt-get install -y -qq adb curl jq 2>/dev/null || true
+          adb start-server || true
           for i in $(seq 1 40); do adb connect 127.0.0.1:5555 && break; sleep 3; done
           sleep 10
           adb devices
