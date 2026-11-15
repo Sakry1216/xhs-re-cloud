@@ -9,10 +9,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Pull redroid arm64
         id: img
         run: |
-          set -x
           FOUND=""
           for IMG in redroid/redroid:13.0.0-arm64 redroid/redroid:12.0.0-arm64 redroid/redroid:11.0.0-arm64 redroid/redroid:13.0.0-latest redroid/redroid:12.0.0-latest redroid/redroid:11.0.0-latest; do
             if timeout 300 docker pull "$IMG" 2>&1 | tail -2; then
@@ -61,29 +63,15 @@ jobs:
           timeout 600 $A install -r xhs.apk 2>&1 | tail -3 || true
           $A shell pm list packages | grep xingin || true
 
-      - name: Dismiss notice + launch XHS
+      - name: Dismiss notice and launch XHS
         run: |
           A="adb -s 127.0.0.1:5555"
-          $A shell settings put global window_attention_anim_duration 0 2>/dev/null || true
           for round in 1 2 3; do
             $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
             $A shell cat /sdcard/ui.xml > ui.xml 2>/dev/null || true
-            COORD=$(python3 - <<'EOF'
-import re, sys
-try:
-    t = open('ui.xml', encoding='utf-8', errors='replace').read()
-except Exception:
-    print(''); sys.exit()
-for m in re.finditer(r'text="([^"]+)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', t):
-    if m.group(1).strip().lower() in ('agree', '同意', 'allow'):
-        x = (int(m.group(2)) + int(m.group(4))) // 2
-        y = (int(m.group(3)) + int(m.group(5))) // 2
-        print(f'{x} {y}'); sys.exit()
-print('')
-EOF
-)
-            echo "round=$round coord=$COORD"
-            if [ -n "$COORD" ]; then $A shell input tap $COORD; fi
+            COORD=$(python3 scripts/tap_text.py ui.xml "Agree,同意,allow" || true)
+            echo "round=$round coord=[$COORD]"
+            if [ -n "$COORD" ]; then $A shell input tap $COORD || true; fi
             sleep 3
           done
           $A exec-out screencap -p > after_notice.png || true
@@ -92,15 +80,7 @@ EOF
           $A exec-out screencap -p > xhs_a.png || true
           $A shell uiautomator dump /sdcard/ui2.xml >/dev/null 2>&1 || true
           $A shell cat /sdcard/ui2.xml > ui2.xml 2>/dev/null || true
-          python3 - <<'EOF' || true
-import re
-try:
-    t = open('ui2.xml', encoding='utf-8', errors='replace').read()
-    for m in re.finditer(r'text="([^"]{1,40})"', t):
-        print('TEXT:', m.group(1))
-except Exception as e:
-    print('parse err', e)
-EOF
+          python3 scripts/dump_ui.py ui2.xml || true
           $A shell input tap 540 1000 || true
           sleep 12
           $A exec-out screencap -p > xhs_b.png || true
