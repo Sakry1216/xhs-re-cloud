@@ -1,0 +1,74 @@
+name: waydroid-xhs
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  wd:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: System info
+        run: |
+          uname -a
+          nproc
+          free -h
+          cat /etc/os-release | head -3
+
+      - name: Setup binder + deps
+        run: |
+          set -x
+          sudo modprobe binder_linux || true
+          sudo mkdir -p /dev/binderfs
+          sudo mount -t binder binder /dev/binderfs || true
+          ls -l /dev/binder* 2>/dev/null || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl ca-certificates python3 python3-pip lxc uidmap dbus policykit-1 || true
+
+      - name: Install waydroid
+        run: |
+          set -x
+          sudo apt-get install -y -qq waydroid || {
+            curl -s https://repo.waydro.id | sudo bash
+            sudo apt-get install -y -qq waydroid
+          }
+          waydroid --version || true
+
+      - name: Init waydroid (download images)
+        run: |
+          set -x
+          sudo waydroid init -s GAPPS -f || sudo waydroid init -f || true
+          ls -la /var/lib/waydroid 2>/dev/null | head -20
+
+      - name: Start container
+        run: |
+          set -x
+          sudo systemctl start waydroid-container 2>/dev/null || sudo waydroid container start &
+          sleep 8
+          sudo systemctl status waydroid-container --no-pager 2>/dev/null | head -20 || true
+          waydroid status || true
+
+      - name: Probe android
+        run: |
+          set -x
+          sudo waydroid container start 2>/dev/null || true
+          sleep 30
+          waydroid status || true
+          waydroid shell getprop ro.build.version.release || true
+          waydroid shell getprop ro.product.cpu.abilist || true
+          waydroid shell "ps -A | head" || true
+          adb devices || true
+          adb connect 192.168.240.112:5555 || true
+          adb devices || true
+          waydroid shell screencap -p /sdcard/wd.png || true
+          waydroid shell ls -l /sdcard/wd.png || true
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          set -x
+          ls -la /var/lib/waydroid 2>/dev/null | head -30
+          sudo journalctl -u waydroid-container --no-pager | tail -60 || true
+          sudo tail -100 /var/lib/waydroid/waydroid.log 2>/dev/null || true
+          waydroid log 2>/dev/null | tail -60 || true
