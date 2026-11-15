@@ -7,99 +7,91 @@ on:
 jobs:
   redroid:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - name: System info
         run: uname -a; nproc; free -h; docker --version
 
-      - name: Find redroid image
-        id: tag
+      - name: Pull redroid arm64
+        id: img
         run: |
           set -x
           FOUND=""
           for IMG in \
-            redroid/redroid:13.0.0_arm64 redroid/redroid:12.0.0_arm64 redroid/redroid:11.0.0_arm64 \
-            redroid/redroid:14.0.0_arm64 redroid/redroid:15.0.0_arm64 \
-            redroid/redroid:13.0.0 redroid/redroid:12.0.0 redroid/redroid:11.0.0 redroid/redroid:latest; do
+            redroid/redroid:13.0.0-arm64 redroid/redroid:12.0.0-arm64 redroid/redroid:11.0.0-arm64 \
+            redroid/redroid:13.0.0-latest redroid/redroid:12.0.0-latest redroid/redroid:11.0.0-latest \
+            redroid/redroid:13.0.0_64only-latest redroid/redroid:12.0.0_64only-latest; do
             echo "== try $IMG"
-            if timeout 240 docker pull "$IMG"; then FOUND="$IMG"; break; fi
+            if timeout 300 docker pull "$IMG" 2>&1 | tail -3; then
+              A=$(docker image inspect --format '{{.Architecture}}' "$IMG" 2>/dev/null || echo "?")
+              echo "arch=$A"
+              if [ "$A" = "arm64" ]; then FOUND="$IMG"; break; fi
+            fi
           done
           echo "FOUND=$FOUND"
-          if [ -z "$FOUND" ]; then
-            echo "ALL_PULL_FAILED"
-            timeout 60 curl -sS "https://hub.docker.com/v2/repositories/redroid/redroid/tags?page_size=25" | head -c 2000 || true
-            exit 1
-          fi
+          [ -n "$FOUND" ] || exit 1
           echo "image=$FOUND" >> "$GITHUB_OUTPUT"
 
       - name: Start redroid
+        env:
+          IMG: ${{ steps.img.outputs.image }}
         run: |
           set -x
           sudo modprobe binder_linux || true
           sudo mkdir -p /dev/binderfs
           sudo mount -t binder binder /dev/binderfs || true
           ls -l /dev/binderfs || true
-          IMG="redroid/redroid:13.0.0_arm64"
-          if [ ! -z "$(grep -o 'image=.*' /dev/null 2>/dev/null)" ]; then true; fi
-          IMG_FILE="/tmp/redroid_img.txt"
-          if [ -f "$IMG_FILE" ]; then IMG=$(cat "$IMG_FILE"); fi
+          docker pull "$IMG"
           docker run -d --privileged --name redroid -p 5555:5555 \
             -v /dev/binderfs:/dev/binderfs \
-            redroid/redroid:13.0.0_arm64 \
-            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320 || \
-          docker run -d --privileged --name redroid -p 5555:5555 \
-            -v /dev/binderfs:/dev/binderfs \
-            redroid/redroid:12.0.0_arm64 \
-            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320 || \
-          docker run -d --privileged --name redroid -p 5555:5555 \
-            -v /dev/binderfs:/dev/binderfs \
-            redroid/redroid:11.0.0_arm64 \
-            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320 || true
-          sleep 25
+            "$IMG" \
+            androidboot.redroid_width=1080 androidboot.redroid_height=1920 androidboot.redroid_dpi=320
+          sleep 30
           docker ps -a
-          docker logs redroid 2>&1 | tail -80 || true
+          timeout 20 docker logs redroid 2>&1 | tail -60 || true
 
       - name: Setup adb
         run: |
           set -x
           sudo apt-get update -qq
-          sudo apt-get install -y -qq adb curl jq 2>/dev/null || true
+          sudo apt-get install -y -qq adb curl 2>/dev/null || true
           adb start-server || true
-          for i in $(seq 1 40); do adb connect 127.0.0.1:5555 && break; sleep 3; done
-          sleep 10
+          for i in $(seq 1 40); do timeout 10 adb connect 127.0.0.1:5555 && break; sleep 3; done
+          sleep 8
           adb devices
-          for i in $(seq 1 30); do
-            B=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+          for i in $(seq 1 24); do
+            B=$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             echo "boot=$B"; [ "$B" = "1" ] && break; sleep 5
           done
-          adb shell getprop ro.build.version.release || true
-          adb shell getprop ro.product.cpu.abilist || true
-          adb shell "ls /system/lib/arm 2>/dev/null | head -3" || true
+          timeout 20 adb shell getprop ro.build.version.release || true
+          timeout 20 adb shell getprop ro.product.cpu.abilist || true
+          timeout 20 adb shell "ls /system/lib/arm 2>/dev/null | head -3" || true
 
       - name: Install XHS
         run: |
           set -x
           curl -L --retry 3 -o xhs.apk "https://github.com/Sakry1216/xhs-re-cloud/releases/download/apk-v1/xhs_official.apk"
           ls -l xhs.apk
-          adb install -r xhs.apk || adb install -r --no-streaming xhs.apk || echo INSTALL_FAILED
-          adb shell pm list packages | grep xingin || true
+          timeout 600 adb install -r xhs.apk || timeout 600 adb install -r --no-streaming xhs.apk || echo INSTALL_FAILED
+          timeout 20 adb shell pm list packages | grep xingin || true
 
       - name: Launch XHS
         run: |
           set -x
-          adb shell settings put global window_animation_scale 0 || true
-          adb shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
-          sleep 35
-          adb shell dumpsys window | grep mCurrentFocus || true
-          adb shell pidof com.xingin.xhs || true
-          adb shell screencap -p /sdcard/s1.png && adb pull /sdcard/s1.png shot1.png || true
-          adb logcat -d | tail -800 > logcat.txt || true
+          timeout 20 adb shell settings put global window_animation_scale 0 || true
+          timeout 20 adb shell am start -n com.xingin.xhs/com.xingin.xhs.index.v2.IndexActivityV2 || true
+          sleep 40
+          timeout 20 adb shell dumpsys window | grep mCurrentFocus || true
+          timeout 20 adb shell pidof com.xingin.xhs || true
+          timeout 60 adb shell screencap -p /sdcard/s1.png && timeout 60 adb pull /sdcard/s1.png shot1.png || true
+          timeout 60 adb logcat -d > logcat.txt || true
+          tail -300 logcat.txt || true
           ls -l shot1.png logcat.txt || true
 
       - name: Diagnostics
         if: always()
         run: |
-          docker logs redroid 2>&1 | tail -100 || true
+          timeout 30 docker logs redroid 2>&1 | tail -100 || true
 
       - name: Upload artifacts
         if: always()
